@@ -1,0 +1,95 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/bionic64"
+
+  # Machine Web
+  config.vm.define "web" do |web|
+    web.vm.network "private_network", ip: "192.168.56.20"  
+    web.vm.network "forwarded_port", guest: 8080, host: 8086  # Changé pour le port 8080
+    web.vm.hostname = "web-node"  
+    web.vm.provider "virtualbox" do |vb|
+      vb.name = "web-server"
+      vb.memory = "2048"
+      vb.cpus = 2
+      vb.gui = false
+      vb.customize ["modifyvm", :id, "--graphicscontroller", "vmsvga"]
+    end
+    web.vm.provision "shell", inline: <<-SHELL
+      # Mise à jour du système
+      sudo apt-get update
+      sudo apt-get install -y wget apt-transport-https software-properties-common git curl
+
+      # Installation de Java 17
+      sudo add-apt-repository -y ppa:openjdk-r/ppa
+      sudo apt-get update
+      sudo apt-get install -y openjdk-17-jdk
+
+      # Configuration de JAVA_HOME
+      echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" | sudo tee -a /etc/environment
+      export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+      
+      # Installation de Node.js 16.x
+      curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+      sudo apt-get install -y nodejs
+
+      # Clonage du projet
+      cd /home/vagrant
+      git clone https://github.com/ngorseck/admin-app.git
+      cd admin-app
+
+      # Configuration des variables d'environnement
+      echo "export DB_HOST=192.168.56.21" >> ~/.bashrc
+      echo "export DB_NAME=adminapp-db" >> ~/.bashrc
+      echo "export DB_USERNAME=admin" >> ~/.bashrc
+      echo "export DB_PASSWORD=password" >> ~/.bashrc
+      source ~/.bashrc
+
+      # Rendre le mvnw exécutable
+      chmod +x mvnw
+
+      # Installation des dépendances
+      ./mvnw package -DskipTests
+
+      # Créer le dossier logs
+      mkdir -p logs
+
+      # Démarrer l'application en arrière-plan
+      nohup java -jar target/*.jar \
+        -DDB_HOST=192.168.56.21 \
+        -DDB_NAME=adminapp-db \
+        -DDB_USERNAME=admin \
+        -DDB_PASSWORD=password \
+        > logs/spring-boot.log 2>&1 &
+
+      # Attendre que l'application démarre
+      sleep 30
+    SHELL
+  end
+
+  # Machine DB
+  config.vm.define "db" do |db|
+    db.vm.network "private_network", ip: "192.168.56.21"
+    db.vm.hostname = "db-node"
+    db.vm.provider "virtualbox" do |vb|
+      vb.name = "db-server"
+      vb.memory = "1024"
+      vb.cpus = 1
+    end
+
+    db.vm.provision "shell", inline: <<-SHELL
+      # Installation de MySQL
+      sudo apt-get update
+      sudo apt-get install -y mysql-server
+
+      # Configuration de MySQL pour accepter les connexions externes
+      sudo sed -i 's/bind-address.*$/bind-address = 0.0.0.0/' /etc/mysql/mysql.conf.d/mysqld.cnf
+      
+      # Création de la base de données et de l'utilisateur
+      sudo mysql -e "CREATE DATABASE admin_app_db;"
+      sudo mysql -e "CREATE USER 'admin'@'%' IDENTIFIED BY 'password';"
+      sudo mysql -e "GRANT ALL PRIVILEGES ON admin_app_db.* TO 'admin'@'%';"
+      sudo mysql -e "FLUSH PRIVILEGES;"
+      # Redémarrage de MySQL
+      sudo systemctl restart mysql
+    SHELL
+  end
+end
